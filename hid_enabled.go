@@ -9,10 +9,8 @@
 package hid
 
 /*
-#cgo CFLAGS: -I./hidapi/hidapi
-
-#cgo linux CFLAGS: -I./libusb/libusb -DDEFAULT_VISIBILITY="" -DOS_LINUX -D_GNU_SOURCE -DPOLL_NFDS_TYPE=int
-#cgo linux,!android LDFLAGS: -lrt
+#cgo linux CFLAGS: -DDEFAULT_VISIBILITY="" -DOS_LINUX -D_GNU_SOURCE -DPOLL_NFDS_TYPE=int
+#cgo linux,!android LDFLAGS: -lrt -lhidapi-hidraw
 #cgo darwin CFLAGS: -DOS_DARWIN
 #cgo darwin LDFLAGS: -framework CoreFoundation -framework IOKit
 #cgo windows CFLAGS: -DOS_WINDOWS
@@ -20,32 +18,24 @@ package hid
 
 #ifdef OS_LINUX
 	#include <sys/poll.h>
-	#include "os/threads_posix.c"
-	#include "os/poll_posix.c"
-
-	#include "os/linux_usbfs.c"
-	#include "os/linux_netlink.c"
-
-	#include "core.c"
-	#include "descriptor.c"
-	#include "hotplug.c"
-	#include "io.c"
-	#include "strerror.c"
-	#include "sync.c"
-
-	#include "hidapi/libusb/hid.c"
-#elif OS_DARWIN
-	#include "hidapi/mac/hid.c"
-#elif OS_WINDOWS
-	#include "hidapi/windows/hid.c"
+	#include <hidapi/hidapi.h>
+	#include <malloc.h>
 #endif
+
+#include <errno.h>
+int GoHidGetErrno() {
+	return errno;
+}
+
 */
 import "C"
+
 import (
 	"errors"
 	"fmt"
 	"runtime"
 	"sync"
+	"syscall"
 	"unsafe"
 )
 
@@ -183,12 +173,12 @@ func (dev *Device) DoWrite(b []byte, featureReport bool) (int, error) {
 	// Execute the write operation
 	var written int
 	if featureReport {
-		written = int(C.hid_write(device, (*C.uchar)(&report[0]), C.size_t(len(report))))
-	} else {
 		written = int(C.hid_send_feature_report(device, (*C.uchar)(&report[0]), C.size_t(len(report))))
+	} else {
+		written = int(C.hid_write(device, (*C.uchar)(&report[0]), C.size_t(len(report))))
 	}
 	if written == -1 {
-		return dev.getError()
+		return 0, dev.getError()
 	}
 	return written, nil
 }
@@ -212,8 +202,9 @@ func (dev *Device) DoRead(b []byte, featureReport bool) (int, error) {
 	} else {
 		read = int(C.hid_read(device, (*C.uchar)(&b[0]), C.size_t(len(b))))
 	}
+
 	if read == -1 {
-		dev.getError()
+		return 0, dev.getError()
 	}
 	return read, nil
 }
@@ -221,13 +212,15 @@ func (dev *Device) DoRead(b []byte, featureReport bool) (int, error) {
 func (dev *Device) getError() error {
 	// If the operation failed, verify if closed or other error
 	if dev == nil {
-		return 0, ErrDeviceClosed
+		return ErrDeviceClosed
 	}
 	// Device not closed, some other error occurred
-	message := C.hid_error(dev)
+	message := C.hid_error(dev.device)
 	if message == nil {
-		return 0, errors.New("hidapi: unknown failure")
+		cErrno := C.GoHidGetErrno() // Defined at import "C"
+		err := syscall.Errno(cErrno)
+		return fmt.Errorf("hidapi: unknown failure. Errno: %v", err)
 	}
 	failure, _ := wcharTToString(message)
-	return 0, errors.New("hidapi: " + failure)
+	return errors.New("hidapi: " + failure)
 }
