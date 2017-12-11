@@ -13,6 +13,10 @@ import "errors"
 // during the execution.
 var ErrDeviceClosed = errors.New("hid: device closed")
 
+// ErrTimeout is returned from DoRead if the feature flag is false and the timeout is
+// set to a positive duration
+var ErrTimeout = errors.New("hid: operation timed out")
+
 // ErrUnsupportedPlatform is returned for all operations where the underlying
 // operating system is not supported by the library.
 var ErrUnsupportedPlatform = errors.New("hid: unsupported platform")

@@ -36,6 +36,7 @@ import (
 	"runtime"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -146,7 +147,7 @@ func (dev *Device) Write(b []byte) (int, error) {
 }
 
 func (dev *Device) Read(b []byte) (int, error) {
-	return dev.DoRead(b, false)
+	return dev.DoRead(b, false, 0)
 }
 
 // Write sends an output report to a HID device.
@@ -184,7 +185,7 @@ func (dev *Device) DoWrite(b []byte, featureReport bool) (int, error) {
 }
 
 // Read retrieves an input report from a HID device.
-func (dev *Device) DoRead(b []byte, featureReport bool) (int, error) {
+func (dev *Device) DoRead(b []byte, featureReport bool, timeout time.Duration) (int, error) {
 	// Abort if nothing to read
 	if len(b) == 0 {
 		return 0, nil
@@ -200,7 +201,14 @@ func (dev *Device) DoRead(b []byte, featureReport bool) (int, error) {
 	if featureReport {
 		read = int(C.hid_get_feature_report(device, (*C.uchar)(&b[0]), C.size_t(len(b))))
 	} else {
-		read = int(C.hid_read(device, (*C.uchar)(&b[0]), C.size_t(len(b))))
+		if timeout > 0 {
+			read = int(C.hid_read_timeout(device, (*C.uchar)(&b[0]), C.size_t(len(b)), C.int(timeout/time.Millisecond)))
+			if read == 0 {
+
+			}
+		} else {
+			read = int(C.hid_read(device, (*C.uchar)(&b[0]), C.size_t(len(b))))
+		}
 	}
 
 	if read == -1 {
