@@ -43,6 +43,7 @@ package hid
 import "C"
 import (
 	"errors"
+	"fmt"
 	"runtime"
 	"sync"
 	"unsafe"
@@ -57,9 +58,18 @@ import (
 //   > "subsequent calls will cause the hid manager to release previously enumerated devices"
 var enumerateLock sync.Mutex
 
-func init() {
-	// Initialize the HIDAPI library
-	C.hid_init()
+func Init() error {
+	if res := C.hid_init(); res < 0 {
+		return fmt.Errorf("Failed to initialize hidapi: %v", res)
+	}
+	return nil
+}
+
+func Shutdown() error {
+	if res := C.hid_exit(); res < 0 {
+		return fmt.Errorf("Failed to clean up hidapi: %v", res)
+	}
+	return nil
 }
 
 // Supported returns whether this platform is supported by the HID library or not.
@@ -128,17 +138,12 @@ func (info DeviceInfo) Open() (*Device, error) {
 
 // Device is a live HID USB connected device handle.
 type Device struct {
-	DeviceInfo // Embed the infos for easier access
-
-	device *C.hid_device // Low level HID device to communicate through
-	lock   sync.Mutex
+	DeviceInfo               // Embed the infos for easier access
+	device     *C.hid_device // Low level HID device to communicate through
 }
 
 // Close releases the HID USB device handle.
 func (dev *Device) Close() error {
-	dev.lock.Lock()
-	defer dev.lock.Unlock()
-
 	if dev.device != nil {
 		C.hid_close(dev.device)
 		dev.device = nil
@@ -146,20 +151,25 @@ func (dev *Device) Close() error {
 	return nil
 }
 
+func (dev *Device) Write(b []byte) (int, error) {
+	return dev.DoWrite(b, false)
+}
+
+func (dev *Device) Read(b []byte) (int, error) {
+	return dev.DoRead(b, false)
+}
+
 // Write sends an output report to a HID device.
 //
 // Write will send the data on the first OUT endpoint, if one exists. If it does
 // not, it will send the data through the Control Endpoint (Endpoint 0).
-func (dev *Device) Write(b []byte) (int, error) {
+func (dev *Device) DoWrite(b []byte, featureReport bool) (int, error) {
 	// Abort if nothing to write
 	if len(b) == 0 {
 		return 0, nil
 	}
 	// Abort if device closed in between
-	dev.lock.Lock()
 	device := dev.device
-	dev.lock.Unlock()
-
 	if device == nil {
 		return 0, ErrDeviceClosed
 	}
@@ -171,59 +181,53 @@ func (dev *Device) Write(b []byte) (int, error) {
 		report = b
 	}
 	// Execute the write operation
-	written := int(C.hid_write(device, (*C.uchar)(&report[0]), C.size_t(len(report))))
+	var written int
+	if featureReport {
+		written = int(C.hid_write(device, (*C.uchar)(&report[0]), C.size_t(len(report))))
+	} else {
+		written = int(C.hid_send_feature_report(device, (*C.uchar)(&report[0]), C.size_t(len(report))))
+	}
 	if written == -1 {
-		// If the write failed, verify if closed or other error
-		dev.lock.Lock()
-		device = dev.device
-		dev.lock.Unlock()
-
-		if device == nil {
-			return 0, ErrDeviceClosed
-		}
-		// Device not closed, some other error occurred
-		message := C.hid_error(device)
-		if message == nil {
-			return 0, errors.New("hidapi: unknown failure")
-		}
-		failure, _ := wcharTToString(message)
-		return 0, errors.New("hidapi: " + failure)
+		return dev.getError()
 	}
 	return written, nil
 }
 
 // Read retrieves an input report from a HID device.
-func (dev *Device) Read(b []byte) (int, error) {
-	// Aborth if nothing to read
+func (dev *Device) DoRead(b []byte, featureReport bool) (int, error) {
+	// Abort if nothing to read
 	if len(b) == 0 {
 		return 0, nil
 	}
-	// Abort if device closed in between
-	dev.lock.Lock()
-	device := dev.device
-	dev.lock.Unlock()
 
+	// Abort if device closed in between
+	device := dev.device
 	if device == nil {
 		return 0, ErrDeviceClosed
 	}
 	// Execute the read operation
-	read := int(C.hid_read(device, (*C.uchar)(&b[0]), C.size_t(len(b))))
+	var read int
+	if featureReport {
+		read = int(C.hid_get_feature_report(device, (*C.uchar)(&b[0]), C.size_t(len(b))))
+	} else {
+		read = int(C.hid_read(device, (*C.uchar)(&b[0]), C.size_t(len(b))))
+	}
 	if read == -1 {
-		// If the read failed, verify if closed or other error
-		dev.lock.Lock()
-		device = dev.device
-		dev.lock.Unlock()
-
-		if device == nil {
-			return 0, ErrDeviceClosed
-		}
-		// Device not closed, some other error occurred
-		message := C.hid_error(device)
-		if message == nil {
-			return 0, errors.New("hidapi: unknown failure")
-		}
-		failure, _ := wcharTToString(message)
-		return 0, errors.New("hidapi: " + failure)
+		dev.getError()
 	}
 	return read, nil
+}
+
+func (dev *Device) getError() error {
+	// If the operation failed, verify if closed or other error
+	if dev == nil {
+		return 0, ErrDeviceClosed
+	}
+	// Device not closed, some other error occurred
+	message := C.hid_error(dev)
+	if message == nil {
+		return 0, errors.New("hidapi: unknown failure")
+	}
+	failure, _ := wcharTToString(message)
+	return 0, errors.New("hidapi: " + failure)
 }
